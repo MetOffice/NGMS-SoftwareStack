@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+################################################################################
+# This script will fetch repositories needed to build an LFRic Stack including #
+# The script uses its own location as the root for the build and installs      #
+# everything in subdirectories.                                                #
+# To run script execute in directory where you wish to install everything      #
+################################################################################
+
+# Stop on errors, unset variables are errors
+set -e -u
+
+usage="$(basename "$0") [-h] [-n n] [-d path] -- Script to build LFRic software 
+stack, this will build everything in a standalone way from the compilier up. 
+LFRic itself is not built.
+
+where:
+    -h  show this help text
+    -n  set number of cores to use with Make
+    -d  set root directory for stack"
+
+NCORES=2
+root_dir=$PWD
+while getopts ':hn:d:' option; do
+  case "$option" in
+    h) echo "$usage"
+       exit
+       ;;
+    n) NCORES=$OPTARG
+       ;;
+    d) root_dir=$OPTARG
+       ;;
+    :) printf "missing argument for -%s\n" "$OPTARG" >&2
+       echo "$usage" >&2
+       exit 1
+       ;;
+   \?) printf "illegal option: -%s\n" "$OPTARG" >&2
+       echo "$usage" >&2
+       exit 1
+       ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+COLUMNS=$(tput cols)
+printf "=%.0s"  $(seq 1 $COLUMNS)
+printf "\n"
+echo "GCC Stack for LFRic"
+
+root_src_dir=$root_dir/src_dir
+root_build_dir=$root_dir/build_dir
+root_install_dir=$root_dir/install_dir
+tar_dir=$root_src_dir/tar_files
+
+# Write installation info to file.
+cat > $root_dir/install.info << EOF1
+                   
+################################################################################
+#                    LFRic Stack installation information                      #
+# This file contains information on the compiler and libraries installed by    #
+# the Allmake script in this directory. The versions and details of the        #
+# installation are included.                                                   #
+################################################################################
+                   
+EOF1
+
+# Modules required by the build system.
+module purge
+module load cmake
+
+if [ ! -d "$root_src_dir" ]; then mkdir $root_src_dir; fi
+if [ ! -d "$root_build_dir" ]; then mkdir $root_build_dir; fi
+if [ ! -d "$root_install_dir" ]; then mkdir $root_install_dir; fi
+
+cd $root_src_dir
+if [ ! -d "$tar_dir" ]; then mkdir $tar_dir; fi
+
+# Fetch additional repos for build
+printf "=%.0s"  $(seq 1 $COLUMNS)
+printf "\n"
+echo "Fetch and build additional dependencies"
+printf "\n"
+printf "=%.0s"  $(seq 1 $COLUMNS)
+printf "\n"
+
+# Build GCC
+echo "Build GCC"
+gcc_src=$root_src_dir/gcc
+gcc_build=$root_build_dir/gcc
+gcc_install=$root_install_dir/gcc
+gcc_version=10.2.0
+if [ ! -d "$gcc_src" ]
+then
+    # If the GCC tar ball hasn't been downloaded go and fetch it
+    if [ ! -f "$tar_dir/gcc-$gcc_version.tar.gz" ]
+    then
+        echo "Fetching GCC "$gcc_version" tar ball"
+        gcc_url="http://www.mirrorservice.org/sites/ftp.gnu.org/gnu/gcc/gcc-"$gcc_version"/gcc-"$gcc_version".tar.gz"
+        wget -P $tar_dir $gcc_url
+    fi
+    mkdir $gcc_src
+    echo "Extracting GCC "$gcc_version", this may take some time"
+    tar zxf $tar_dir/gcc-$gcc_version.tar.gz -C $gcc_src --strip-components 1
+    cd $gcc_src
+    # Fetch the GCC prerequisites
+    $gcc_src/contrib/download_prerequisites
+fi
+if [ ! -f $gcc_install/bin/gcc ]
+then
+    if [ ! -d "$gcc_build" ]
+    then
+        mkdir $gcc_build
+    fi 
+    cd $gcc_build
+    echo "Building GCC "$gcc_version", this will take some time."
+    echo "Monitor $gcc_build/<log> files for progress and to check for errors in the build"
+    $gcc_src/configure --prefix=$gcc_install --enable-languages=c,c++,fortran \
+        --disable-multilib &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+    echo "Building GCC "$gcc_version" complete"  
+else
+    echo "GCC "$gcc_version" already built, delete $gcc_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+Compiler:
+    GCC             $gcc_version
+EOF1
+
+export CC=$gcc_install/bin/gcc
+export CXX=$gcc_install/bin/g++
+export FC=$gcc_install/bin/gfortran
+export LD_LIBRARY_PATH=$gcc_install/lib64:$gcc_install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LIBRARY_PATH=$gcc_install/lib64:$gcc_install/lib${LIBRARY_PATH:+:$LIBRARY_PATH}
+export PATH=$gcc_install/bin${PATH:+:$PATH}
+export FFLAGS="-w -fallow-argument-mismatch -O2${FFLAGS:+ $FFLAGS}"
+export FCFLAGS="-w -fallow-argument-mismatch -O2${FCFLAGS:+ $FCFLAGS}"
+
+# Build MPICH
+printf "=%.0s"  $(seq 1 $COLUMNS)
+echo "Build MPICH"
+printf "\n"
+mpich_src=$root_src_dir/mpich
+mpich_build=$root_build_dir/mpich
+mpich_install=$root_install_dir/mpich
+mpich_version=3.3.2
+if [ ! -d "$mpich_src" ]
+then
+    if [ ! -f "$tar_dir/mpich-$mpich_version.tar.gz" ]
+    then
+      echo "Fetching MPICH "$mpich_version" tar ball"
+      mpich_url="http://www.mpich.org/static/downloads/"$mpich_version"/mpich-"$mpich_version".tar.gz"
+      wget -P $tar_dir $mpich_url
+    fi
+    mkdir $mpich_src
+    echo "Extracting MPICH "$mpich_version
+    tar zxf $tar_dir/mpich-$mpich_version.tar.gz -C $mpich_src --strip-components 1
+fi
+if [ ! -d $mpich_install ]
+then
+    cd $mpich_src
+    if [ ! -d "$mpich_build" ]
+    then
+        mkdir $mpich_build
+    fi 
+    cd $mpich_build
+    echo "Building MPICH "$mpich_version", this will take some time."
+    echo "Monitor $mpich_build/<log> file for progress"
+    $mpich_src/configure --prefix=$mpich_install --enable-fortran=all --enable-cxx --enable-threads=multiple --enable-shared --enable-romio &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+    echo "Building MPICH "$mpich_version" complete"
+else
+    echo "MPICH "$mpich_version" already built, delete $mpich_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+MPI Libraries:
+    MPICH           $mpich_version
+EOF1
+
+export CC=$mpich_install/bin/mpicc
+export CXX=$mpich_install/bin/mpicxx
+export FC=$mpich_install/bin/mpifort
+export FF=$mpich_install/bin/mpifort
+export LD_LIBRARY_PATH=$mpich_install/lib:$LD_LIBRARY_PATH
+export LIBRARY_PATH=$mpich_install/lib:$LIBRARY_PATH
+export PATH=$mpich_install/bin:$PATH
+
+# Build YAXT
+yaxt_src=$root_src_dir/yaxt
+yaxt_build=$root_build_dir/yaxt
+yaxt_install=$root_install_dir/yaxt
+yaxt_version=0.9.0
+
+if [ ! -d "$yaxt_src" ]
+then
+    if [ ! -f "$tar_dir/yaxt-"$yaxt_version".tar.gz" ]
+    then
+      echo "Fetching yaxt "$yaxt_version" tar ball"
+      yaxt_url=https://www.dkrz.de/redmine/attachments/download/498/yaxt-$yaxt_version.tar.gz
+      wget -P $tar_dir $yaxt_url
+    fi
+    mkdir $yaxt_src
+    echo "Extract yaxt "$yaxt_version
+    tar zxf $tar_dir/yaxt-$yaxt_version.tar.gz -C $yaxt_src --strip-components 1
+fi
+if [ ! -d $yaxt_install ]
+then
+    if [ ! -d "$yaxt_build" ]
+    then
+        mkdir $yaxt_build
+    else
+        cd $yaxt_build
+        rm -rf *        
+    fi 
+    cd $yaxt_build
+    echo "Building yaxt "$yaxt_version", this will take some time."
+    echo "Monitor $yaxt_build/<log> file for progress"
+    $yaxt_src/configure --prefix=$yaxt_install --with-idxtype=long &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+else
+    echo "yaxt already built, delete $yaxt_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+    YAXT            $yaxt_version
+EOF1
+
+# Build HDF5
+printf "=%.0s"  $(seq 1 $COLUMNS)
+echo "Build HDF5"
+printf "\n"
+hdf5_src=$root_src_dir/hdf5
+hdf5_build=$root_build_dir/hdf5
+hdf5_install=$root_install_dir/hdf5
+hdf5_version_major=1.10
+hdf5_version_minor=6
+if [ ! -d "$hdf5_src" ]
+then
+    if [ ! -f "$tar_dir/hdf5-"$hdf5_version_major".tar.gz" ]
+    then
+      echo "Fetching HDF5 "$hdf5_version_major"."$hdf5_version_minor" tar ball"
+      hdf5_url="https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-"$hdf5_version_major"/hdf5-"$hdf5_version_major"."$hdf5_version_minor"/src/hdf5-"$hdf5_version_major"."$hdf5_version_minor".tar.gz"
+      wget -P $tar_dir $hdf5_url
+    fi
+    mkdir $hdf5_src
+    echo "Extracting HDF5 "$hdf5_version_major"."$hdf5_version_minor
+    tar zxf $tar_dir/hdf5-$hdf5_version_major.$hdf5_version_minor.tar.gz -C $hdf5_src --strip-components 1
+fi
+if [ ! -d $hdf5_install ]
+then
+    cd $hdf5_src
+    if [ ! -d "$hdf5_build" ]
+    then
+        mkdir $hdf5_build
+    fi 
+    cd $hdf5_build
+    echo "Building HDF5 "$hdf5_version_major"."$hdf5_version_minor", this will take some time."
+    echo "Monitor $hdf5_build/<log> filed for progress"
+    $hdf5_src/configure --prefix=$hdf5_install --enable-shared --enable-fortran --enable-parallel &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+    echo "Building HDF5 "$hdf5_version_major"."$hdf5_version_minor" complete"
+else
+    echo "HDF5 "$hdf5_version_major"."$hdf5_version_minor" already built, delete $hdf5_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+IO Libraries:
+    HDF5            $hdf5_version_major.$hdf5_version_minor
+EOF1
+
+export LD_LIBRARY_PATH=$hdf5_install/lib:$LD_LIBRARY_PATH
+export LIBRARY_PATH=$hdf5_install/lib:$LIBRARY_PATH
+
+
+# Build NetCDF4-C
+printf "=%.0s"  $(seq 1 $COLUMNS)
+echo "Build NETCDF4"
+printf "\n"
+netcdf4_c_src=$root_src_dir/netcdf4_c
+netcdf4_c_build=$root_build_dir/netcdf4_c
+netcdf4_c_install=$root_install_dir/netcdf4
+netcdf4_c_version=4.7.3
+export LDFLAGS="-L${hdf5_install}/lib -L${mpich_install}/lib"
+export CPPFLAGS="-I${hdf5_install}/include -L${mpich_install}/include"
+if [ ! -d "$netcdf4_c_src" ]
+then
+    if [ ! -f "$tar_dir/netcdf-c-"$netcdf4_c_version".tar.gz" ]
+    then
+      echo "Fetching NETCDF4_C "$netcdf4_c_version" tar ball"
+      netcdf4_c_url="ftp://ftp.unidata.ucar.edu/pub/netcdf/netcdf-c-"$netcdf4_c_version".tar.gz"
+      wget -P $tar_dir $netcdf4_c_url
+    fi
+    mkdir $netcdf4_c_src
+    echo "Extract NETCDF4_C"$netcdf4_c_version
+    tar zxf $tar_dir/netcdf-c-$netcdf4_c_version.tar.gz -C $netcdf4_c_src --strip-components 1
+fi
+if [ ! -d $netcdf4_c_install ]
+then
+    cd $netcdf4_c_src
+    if [ ! -d "$netcdf4_c_build" ]
+    then
+        mkdir $netcdf4_c_build
+    else
+        cd $netcdf4_c_build
+        rm -rf *
+    fi 
+    cd $netcdf4_c_build
+    echo "Building NETCDF4_C "$netcdf4_c_version", this will take some time."
+    echo "Monitor $netcdf4_c_build/<log> file for progress"
+    $netcdf4_c_src/configure --prefix=$netcdf4_c_install --enable-parallel &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+else
+    echo "NETCDF4_C already built, delete $netcdf4_c_install to rebuild"    
+fi
+
+cat >> $root_dir/install.info << EOF1
+    NETCDF4 C       $netcdf4_c_version
+EOF1
+
+export LD_LIBRARY_PATH=$netcdf4_c_install/lib:$LD_LIBRARY_PATH
+export LIBRARY_PATH=$netcdf4_c_install/lib:$LIBRARY_PATH
+export NetCDF_DIR=$netcdf4_c_install
+
+
+# Build NetCDF4-C++
+netcdf4_cxx_src=$root_src_dir/netcdf4_cxx
+netcdf4_cxx_build=$root_build_dir/netcdf4_cxx
+netcdf4_cxx_install=$root_install_dir/netcdf4
+netcdf4_cxx_version=4.3.1
+export LDFLAGS="-L${netcdf4_c_install}/lib -L${hdf5_install}/lib -L${mpich_install}/lib -L${gcc_install}/lib -L${gcc_install}/lib64"
+export CPPFLAGS="-I${netcdf4_c_install}/include -I${hdf5_install}/include -L${mpich_install}/include -I${gcc_install}/include"
+export CFLAGS="-I${netcdf4_c_install}/include -I${hdf5_install}/include -L${mpich_install}/include -I${gcc_install}/include"
+if [ ! -d "$netcdf4_cxx_src" ]
+then
+    if [ ! -f "$tar_dir/netcdf-cxx4-"$netcdf4_cxx_version".tar.gz" ]
+    then
+      echo "Fetching NETCDF4_C++ "$netcdf4_cxx_version" tar ball"
+      netcdf4_cxx_url="ftp://ftp.unidata.ucar.edu/pub/netcdf/netcdf-cxx4-"$netcdf4_cxx_version".tar.gz"
+      wget -P $tar_dir $netcdf4_cxx_url
+    fi
+    mkdir $netcdf4_cxx_src
+    echo "Extract NETCDF4_C++ "$netcdf4_cxx_version
+    tar zxf $tar_dir/netcdf-cxx4-$netcdf4_cxx_version.tar.gz -C $netcdf4_cxx_src --strip-components 1
+fi
+if [ ! -d $netcdf4_cxx_build ]
+then
+    if [ ! -d "$netcdf4_cxx_build" ]
+    then
+        mkdir $netcdf4_cxx_build
+    else
+        cd $netcdf4_cxx_build
+        rm -rf *        
+    fi 
+    cd $netcdf4_cxx_build
+    echo "Building NETCDF4_C++ "$netcdf4_cxx_version", this will take some time."
+    echo "Monitor $netcdf4_cxx_build/<log> filed for progress"
+    $netcdf4_cxx_src/configure --prefix=$netcdf4_cxx_install &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+else
+    echo "NETCDF4_C++ already built, delete $netcdf4_c_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+    NETCDF4 C++     $netcdf4_cxx_version
+EOF1
+
+# Build NetCDF4-Fortran
+netcdf4_fortran_src=$root_src_dir/netcdf4_fortran
+netcdf4_fortran_build=$root_build_dir/netcdf4_fortran
+netcdf4_fortran_install=$root_install_dir/netcdf4
+netcdf4_fortran_version=4.5.2
+
+if [ ! -d "$netcdf4_fortran_src" ]
+then
+    if [ ! -f "$tar_dir/netcdf-fortran-"$netcdf4_fortran_version".tar.gz" ]
+    then
+      echo "Fetching NETCDF4_Fortran "$netcdf4_fortran_version" tar ball"
+      netcdf4_fortran_url="ftp://ftp.unidata.ucar.edu/pub/netcdf/netcdf-fortran-"$netcdf4_fortran_version".tar.gz"
+      wget -P $tar_dir $netcdf4_fortran_url
+    fi
+    mkdir $netcdf4_fortran_src
+    echo "Extract NETCDF4_Fortran "$netcdf4_fortran_version
+    tar zxf $tar_dir/netcdf-fortran-$netcdf4_fortran_version.tar.gz -C $netcdf4_fortran_src --strip-components 1
+fi
+if [ ! -d $netcdf4_fortran_build ]
+then
+    if [ ! -d "$netcdf4_fortran_build" ]
+    then
+        mkdir $netcdf4_fortran_build
+    else
+        cd $netcdf4_fortran_build
+        rm -rf *        
+    fi 
+    cd $netcdf4_fortran_build
+    echo "Building NETCDF4_Fortran "$netcdf4_fortran_version", this will take some time."
+    echo "Monitor $netcdf4_fortran_build/<log> file for progress"
+    $netcdf4_fortran_src/configure --prefix=$netcdf4_fortran_install &> configure.log
+    make -j$NCORES &> make.log
+    make install &> make.install.log
+else
+    echo "NETCDF4_Fortran already built, delete $netcdf4_c_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+    NETCDF4 Fortran $netcdf4_fortran_version
+EOF1
+
+# Build XIOS
+xios_version=2.5
+xios_src=$root_src_dir/xios-$xios_version
+xios_build=$root_build_dir/xios-$xios_version
+xios_install=$root_install_dir/xios-$xios_version
+if [ ! -d "$xios_src" ]
+then
+    cd $root_src_dir
+    fcm co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/branchs/xios-$xios_version
+fi
+if [ ! -d $xios_install ]
+then
+    if [ -d "$xios_build" ]
+    then
+        echo "Removing old XIOS build directory"
+        rm -rf $xios_build
+    fi
+    echo "Copying XIOS source files to build directory"
+    cp -rf $xios_src $xios_build       
+    cd $xios_build
+
+cat > $xios_build/arch/arch-GCC_LINUX.env << EOF1
+export HDF5_INC_DIR=$hdf5_install/include
+export HDF5_LIB_DIR=$hdf5_install/lib
+
+export NETCDF_INC_DIR=$netcdf4_c_install/include
+export NETCDF_LIB_DIR=$netcdf4_c_install/lib
+EOF1
+        
+    echo "Building XIOS "$xios_version", this will take some time."
+    echo "Monitor $xios_build/<log> file for progress"
+    ./make_xios --prod --full --arch GCC_LINUX --job $NCORES &> make.log
+    mkdir $xios_install
+    cp -r bin inc lib $xios_install/.       
+else
+    echo "xios already built, delete $xios_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+    XIOS            $xios_version
+EOF1
+
+# Build pFUnit
+pfunit_version=3.3.3
+pfunit_src=$root_src_dir/pfunit
+pfunit_build=$root_build_dir/pfunit-$pfunit_version
+pfunit_install=$root_install_dir/pfunit-$pfunit_version
+if [ ! -d "$pfunit_src" ]
+then
+    cd $root_src_dir
+    git clone https://github.com/Goddard-Fortran-Ecosystem/pFUnit.git pfunit
+    cd pfunit
+    git checkout tags/$pfunit_version -b master
+    sed -i 's/    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS_DEBUG} -O0 -fbounds-check")/    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS_DEBUG} -O0 -fallow-argument-mismatch -fbounds-check")/g' $pfunit_src/CMakeLists.txt
+fi
+if [ ! -d $pfunit_install ]
+then
+    if [ -d "$pfunit_build" ]
+    then
+        echo "Removing old pFUnit build directory"
+        rm -rf $pfunit_build
+    fi
+    
+    echo "Building pFUnit "$pfunit_version", this will take some time."
+    echo "Monitor $pfunit_build/<log> file for progress"       
+    mkdir -p $pfunit_build
+    cd $pfunit_build
+    cmake -DMPI=YES -DMAX_RANK=6 -DMPI_USE_MPIEXEC=YES -DOPENMP=YES -DROBUST=YES -DINSTALL_PATH=$pfunit_install $pfunit_src -DCMAKE_INSTALL_PREFIX=$pfunit_install $pfunit_src
+    make -j$NCORES
+    make tests
+    make install
+          
+else
+    echo "pFUnit already built, delete $pfunit_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+Unit Testing Library
+    pFUnit          $pfunit_version
+EOF1
+
+
+# Build Rose Picker
+rosePicker_revision=24024
+rosePicker_src=$root_src_dir/rosePicker-$rosePicker_revision
+rosePicker_install=$root_install_dir/rosePicker-$rosePicker_revision
+if [ ! -d "$rosePicker_src" ]
+then
+    cd $root_src_dir
+    svn co https://code.metoffice.gov.uk/svn/lfric/GPL-utilities/trunk@$rosePicker_revision rosePicker-$rosePicker_revision
+fi
+if [ ! -d $rosePicker_install ]
+then
+    cp -r $rosePicker_src $root_install_dir/.         
+else
+    echo "rosePicker already built, delete $rosePicker_install to rebuild"
+fi
+
+cat >> $root_dir/install.info << EOF1
+Unit Testing Library
+    rosePicker      r$rosePicker_revision
+EOF1
+
