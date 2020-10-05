@@ -419,7 +419,7 @@ xios_install=$root_install_dir/xios-$xios_version
 if [ ! -d "$xios_src" ]
 then
     cd $root_src_dir
-    fcm co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/branchs/xios-$xios_version
+    svn co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/branchs/xios-$xios_version
 fi
 if [ ! -d $xios_install ]
 then
