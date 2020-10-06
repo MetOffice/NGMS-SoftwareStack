@@ -63,10 +63,6 @@ cat > $root_dir/install.info << EOF1
                    
 EOF1
 
-# Modules required by the build system.
-module purge
-module load cmake
-
 if [ ! -d "$root_src_dir" ]; then mkdir $root_src_dir; fi
 if [ ! -d "$root_build_dir" ]; then mkdir $root_build_dir; fi
 if [ ! -d "$root_install_dir" ]; then mkdir $root_install_dir; fi
